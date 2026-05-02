@@ -118,9 +118,18 @@ async function initializeDatabase() {
         from_email VARCHAR(255),
         from_name VARCHAR(255),
         secure TINYINT(1) DEFAULT 1,
+        is_verified TINYINT(1) DEFAULT 0,
+        last_verified_at DATETIME,
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
       );
     `);
+
+    try {
+      await pool.query(`ALTER TABLE smtp_settings ADD COLUMN is_verified TINYINT(1) DEFAULT 0`);
+    } catch (e) {}
+    try {
+      await pool.query(`ALTER TABLE smtp_settings ADD COLUMN last_verified_at DATETIME`);
+    } catch (e) {}
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS product_email_templates (
@@ -299,44 +308,47 @@ async function startServer() {
   const getTransporter = (smtp: any) => {
     if (!smtp || !smtp.host) return null;
     
-    // Smartly determine security settings
-    let isSecure = smtp.secure === 1 || smtp.secure === true || smtp.secure === "1" || smtp.secure === "true";
+    const host = (smtp.host || "").trim();
+    const user = (smtp.user || "").trim();
+    const pass = (smtp.pass || "").trim();
     const port = parseInt(smtp.port || "587");
     
-    // Port 465 is almost always Implicit SSL/TLS (secure: true)
-    // Port 587 is almost always STARTTLS (secure: false)
-    if (port === 465) isSecure = true;
-    if (port === 587 || port === 25) isSecure = false;
+    // Explicitly handle Gmail as a special case using the service preset
+    if (host.toLowerCase().includes('gmail') || user.toLowerCase().includes('gmail.com')) {
+      console.log(`[SMTP] Using Gmail preset for ${user}`);
+      return nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user, pass },
+        debug: true,
+        logger: true,
+        tls: {
+          rejectUnauthorized: false
+        }
+      });
+    }
+    
+    let isSecure = port === 465;
+    if (port !== 465 && (smtp.secure === 1 || smtp.secure === true || smtp.secure === "1" || smtp.secure === "true")) {
+      isSecure = true;
+    }
 
-    const options: any = {
-      host: (smtp.host || "").trim(),
+    console.log(`[SMTP] Using custom host: ${host}, port: ${port}, secure: ${isSecure}`);
+    return nodemailer.createTransport({
+      host: host,
       port: port,
       secure: isSecure,
-      auth: { 
-        user: (smtp.user || "").trim(), 
-        pass: (smtp.pass || "").trim() 
-      },
+      auth: { user, pass },
       tls: { 
         rejectUnauthorized: false,
         minVersion: 'TLSv1.2',
-        servername: (smtp.host || "").trim()
+        servername: host
       },
-      connectionTimeout: 10000, 
-      greetingTimeout: 10000,
-      socketTimeout: 15000,
-      debug: false, // Set to true for internal debugging if needed
-      logger: false,
-    };
-
-    if (options.host.toLowerCase().includes('gmail')) {
-      options.service = 'gmail';
-      delete options.host;
-      delete options.port;
-      delete options.secure;
-    }
-    
-    console.log(`Initializing transporter for ${smtp.user} (Port: ${port}, Secure: ${isSecure})`);
-    return nodemailer.createTransport(options);
+      connectionTimeout: 15000, 
+      greetingTimeout: 15000,
+      socketTimeout: 20000,
+      debug: true,
+      logger: true
+    });
   };
 
   // Auth Middleware
@@ -771,57 +783,74 @@ async function startServer() {
   apiRouter.post("/settings/smtp", authenticate, async (req: any, res) => {
     const { host, port, user, pass, from_email, from_name, secure } = req.body;
     await pool.query(`
-      INSERT INTO smtp_settings (user_id, host, port, user, pass, from_email, from_name, secure)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO smtp_settings (user_id, host, port, user, pass, from_email, from_name, secure, is_verified)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
       ON DUPLICATE KEY UPDATE 
         host=VALUES(host), port=VALUES(port), user=VALUES(user), pass=VALUES(pass), 
-        from_email=VALUES(from_email), from_name=VALUES(from_name), secure=VALUES(secure)
+        from_email=VALUES(from_email), from_name=VALUES(from_name), secure=VALUES(secure),
+        is_verified=0
     `, [req.user.id, host, port, user, pass, from_email, from_name, secure ? 1 : 0]);
     res.json({ success: true });
   });
 
   // Settings Routes
   apiRouter.post("/settings/smtp/test", authenticate, async (req: any, res) => {
-    const { host, port, user, pass, from_email, from_name, secure, email } = req.body;
-    console.log("SMTP TEST: Starting for", host);
-    
-    const transporter = getTransporter({ host, port, user, pass, secure });
-    if (!transporter) {
-      return res.status(400).json({ error: "Invalid SMTP configuration" });
-    }
-
+    let transporter: any = null;
     try {
-      // Use shorter timeout for verification
-      await Promise.race([
-        transporter.verify(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("SMTP Connection Timeout (15s)")), 15000))
-      ]);
+      const { host, port, user, pass, from_email, from_name, secure, email } = req.body;
+      console.log(`[SMTP TEST] Request from user ${req.user.id} to host: ${host}`);
       
-      console.log("SMTP TEST: Connection verified");
+      transporter = getTransporter({ host, port, user, pass, secure });
+      if (!transporter) {
+        console.error("[SMTP TEST] Transporter creation failed");
+        return res.status(400).json({ error: "Invalid SMTP configuration (host missing?)" });
+      }
+
+      console.log("[SMTP TEST] Verifying connection...");
+      await transporter.verify();
+      console.log("[SMTP TEST] Connection verified successfully");
       
-      await transporter.sendMail({
-        from: `"${from_name || 'CRM Test'}" <${from_email || user}>`,
+      const mailOptions = {
+        from: `"${from_name || 'DigiSheba Test'}" <${from_email || user}>`,
         to: (email || user).trim(),
         subject: "SMTP Test Successful",
         text: "Your SMTP settings are working perfectly!",
         html: "<b>Success!</b><p>Your SMTP settings are working perfectly. This is a test email.</p>",
-      });
+      };
 
-      console.log("SMTP TEST: Success");
-      res.json({ success: true, message: "Test email sent!" });
+      console.log(`[SMTP TEST] Sending test mail to: ${mailOptions.to}`);
+      await transporter.sendMail(mailOptions);
+      console.log("[SMTP TEST] Mail sent successfully");
+
+      // Update verification status in DB
+      await pool.query(`
+        UPDATE smtp_settings 
+        SET is_verified = 1, last_verified_at = NOW() 
+        WHERE user_id = ?
+      `, [req.user.id]);
+
+      return res.json({ success: true, message: "Test email sent!" });
     } catch (err: any) {
-      console.error("SMTP TEST ERROR:", err);
-      let advice = "";
-      if (port === 25) advice = "Port 25 is likely blocked. Try using port 587 or 465.";
-      if (err.code === 'ETIMEDOUT') advice = "Connection timed out. Check if your mail server allows connections from public IPs and check the port.";
-      if (err.code === 'ECONNREFUSED') advice = "Connection refused. The server might be blocking this port.";
-      if (err.message?.includes('Invalid login')) advice = "Invalid login. If using Gmail, please use an App Password.";
+      console.error("[SMTP TEST] Caught Error:", err);
       
-      res.status(500).json({ 
+      let advice = "Check your host, port, and credentials.";
+      const portStr = String(req.body.port);
+      
+      if (portStr === "25") advice = "Port 25 is often blocked. Try 587 or 465.";
+      if (err.code === 'ETIMEDOUT') advice = "Connection timed out. Check your firewall settings.";
+      if (err.code === 'ECONNREFUSED') advice = "Connection refused. Ensure the port is correct.";
+      if (err.message && (err.message.toLowerCase().includes('login') || err.message.includes('535'))) {
+        advice = "Login failed. For Gmail, you MUST use an 'App Password', not your regular password.";
+      }
+      if (err.message && err.message.includes('invalid response')) {
+        advice = "Server returned invalid response. Try changing the 'Secure' toggle.";
+      }
+      
+      return res.status(500).json({ 
         error: "SMTP test failed", 
-        details: err.message || "Unknown error",
+        details: err.message || "No error message provided",
         code: err.code || "N/A",
-        advice: advice || "Check your host, port, and credentials."
+        advice: advice
       });
     } finally {
       if (transporter) {

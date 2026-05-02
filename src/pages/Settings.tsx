@@ -13,7 +13,9 @@ export default function Settings() {
     pass: '',
     from_email: '',
     from_name: '',
-    secure: false
+    secure: false,
+    is_verified: false,
+    last_verified_at: null as string | null
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -62,7 +64,8 @@ export default function Settings() {
       if (data.host) {
         setSmtp({
           ...data,
-          secure: data.secure === 1
+          secure: data.secure === 1,
+          is_verified: data.is_verified === 1
         });
       }
     });
@@ -143,6 +146,9 @@ export default function Settings() {
       });
       if (res.ok) {
         setMessage({ type: 'success', text: 'Settings saved successfully!' });
+        if (activeTab === 'smtp') {
+          setSmtp(prev => ({ ...prev, is_verified: false }));
+        }
         if (activeTab === 'branding') {
           updateBrandingStore(branding);
         }
@@ -237,6 +243,7 @@ export default function Settings() {
 
       if (res.ok) {
         alert('Test email sent successfully! Please check your inbox.');
+        setSmtp(prev => ({ ...prev, is_verified: true, last_verified_at: new Date().toISOString() }));
       } else {
         alert(`SMTP Test Failed:\nError: ${data.error || 'Unknown'}\nDetails: ${data.details || 'No additional details'}\nCode: ${data.code || 'N/A'}`);
       }
@@ -311,11 +318,29 @@ export default function Settings() {
       <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden">
         {activeTab === 'smtp' ? (
           <form onSubmit={handleSave} className="p-8 space-y-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 bg-purple-50 text-purple-600 rounded-lg">
-                <Mail size={20} />
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-purple-50 text-purple-600 rounded-lg">
+                  <Mail size={20} />
+                </div>
+                <h2 className="font-bold text-zinc-900">SMTP Configuration</h2>
               </div>
-              <h2 className="font-bold text-zinc-900">SMTP Configuration</h2>
+              {smtp.is_verified ? (
+                <div className="flex flex-col items-end">
+                  <div className="flex items-center gap-2 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full border border-emerald-100">
+                    <ShieldCheck size={14} />
+                    <span className="text-[10px] font-bold uppercase tracking-wider">Verified & Active</span>
+                  </div>
+                  {smtp.last_verified_at && (
+                    <span className="text-[10px] text-zinc-400 mt-1">Last check: {new Date(smtp.last_verified_at).toLocaleString()}</span>
+                  )}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 px-3 py-1 bg-amber-50 text-amber-600 rounded-full border border-amber-100">
+                  <AlertCircle size={14} />
+                  <span className="text-[10px] font-bold uppercase tracking-wider">Not Verified</span>
+                </div>
+              )}
             </div>
             
             {message.text && activeTab === 'smtp' && (
@@ -349,14 +374,37 @@ export default function Settings() {
                   required
                 />
               </div>
-              {/* Other SMTP fields same as before but styled consistent */}
+              
               <div className="space-y-2">
                 <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider">SMTP User</label>
-                <input type="text" className="w-full px-4 py-3 rounded-xl border border-zinc-200 outline-none focus:ring-2 focus:ring-purple-500" value={smtp.user} onChange={e => setSmtp({...smtp, user: e.target.value})} required />
+                <input type="text" placeholder="user@gmail.com" className="w-full px-4 py-3 rounded-xl border border-zinc-200 outline-none focus:ring-2 focus:ring-purple-500" value={smtp.user} onChange={e => setSmtp({...smtp, user: e.target.value})} required />
               </div>
               <div className="space-y-2">
                 <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider">SMTP Pass</label>
-                <input type="password" className="w-full px-4 py-3 rounded-xl border border-zinc-200 outline-none focus:ring-2 focus:ring-purple-500" value={smtp.pass} onChange={e => setSmtp({...smtp, pass: e.target.value})} required />
+                <input type="password" placeholder="••••••••••••" className="w-full px-4 py-3 rounded-xl border border-zinc-200 outline-none focus:ring-2 focus:ring-purple-500" value={smtp.pass} onChange={e => setSmtp({...smtp, pass: e.target.value})} required />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider">From Email</label>
+                <input type="email" placeholder="noreply@example.com" className="w-full px-4 py-3 rounded-xl border border-zinc-200 outline-none focus:ring-2 focus:ring-purple-500" value={smtp.from_email} onChange={e => setSmtp({...smtp, from_email: e.target.value})} />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider">From Name</label>
+                <input type="text" placeholder="DigiSheba" className="w-full px-4 py-3 rounded-xl border border-zinc-200 outline-none focus:ring-2 focus:ring-purple-500" value={smtp.from_name} onChange={e => setSmtp({...smtp, from_name: e.target.value})} />
+              </div>
+
+              <div className="md:col-span-2 p-4 bg-zinc-50 rounded-2xl border border-zinc-100 flex items-center justify-between">
+                <div>
+                  <label className="text-sm font-bold text-zinc-900">Secure Connection (SSL/TLS)</label>
+                  <p className="text-xs text-zinc-500">Enable this for port 465 (SSL) or if your server requires TLS.</p>
+                </div>
+                <button 
+                  type="button"
+                  onClick={() => setSmtp({...smtp, secure: !smtp.secure})}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${smtp.secure ? 'bg-purple-600' : 'bg-zinc-200'}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${smtp.secure ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
               </div>
             </div>
 
@@ -375,7 +423,7 @@ export default function Settings() {
             </div>
 
             <button type="submit" disabled={saving} className="bg-zinc-900 text-white px-8 py-3 rounded-xl font-bold hover:bg-zinc-800 transition-colors flex items-center gap-2">
-              <Save size={20} /> Save SMTP
+              <Save size={20} /> Save SMTP Configuration
             </button>
 
             <div className="mt-8 pt-8 border-t border-zinc-100">
