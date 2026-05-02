@@ -315,9 +315,12 @@ async function startServer() {
     
     // Explicitly handle Gmail as a special case using the service preset
     if (host.toLowerCase().includes('gmail') || user.toLowerCase().includes('gmail.com')) {
-      console.log(`[SMTP] Using Gmail preset for ${user}`);
+      console.log(`[SMTP] Attempting Gmail preset for ${user}`);
       return nodemailer.createTransport({
         service: 'gmail',
+        host: 'smtp.gmail.com',
+        port: port || 465,
+        secure: port === 465,
         auth: { user, pass },
         debug: true,
         logger: true,

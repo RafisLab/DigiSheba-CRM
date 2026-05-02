@@ -17,6 +17,7 @@ export default function Settings() {
     is_verified: false,
     last_verified_at: null as string | null
   });
+  const [originalSmtp, setOriginalSmtp] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
@@ -62,11 +63,13 @@ export default function Settings() {
     .then(res => res.json())
     .then(data => {
       if (data.host) {
-        setSmtp({
+        const smtpData = {
           ...data,
           secure: data.secure === 1,
           is_verified: data.is_verified === 1
-        });
+        };
+        setSmtp(smtpData);
+        setOriginalSmtp(smtpData);
       }
     });
 
@@ -146,9 +149,21 @@ export default function Settings() {
       });
       if (res.ok) {
         setMessage({ type: 'success', text: 'Settings saved successfully!' });
-        if (activeTab === 'smtp') {
+        
+        // Only reset verification if critical fields changed
+        const criticalChanged = originalSmtp && (
+          smtp.host !== originalSmtp.host ||
+          smtp.port !== originalSmtp.port ||
+          smtp.user !== originalSmtp.user ||
+          smtp.pass !== originalSmtp.pass ||
+          smtp.secure !== originalSmtp.secure
+        );
+
+        if (criticalChanged) {
           setSmtp(prev => ({ ...prev, is_verified: false }));
         }
+        
+        setOriginalSmtp(smtp);
         if (activeTab === 'branding') {
           updateBrandingStore(branding);
         }
@@ -370,7 +385,14 @@ export default function Settings() {
                   placeholder="587"
                   className="w-full px-4 py-3 rounded-xl border border-zinc-200 outline-none focus:ring-2 focus:ring-purple-500"
                   value={smtp.port}
-                  onChange={e => setSmtp({...smtp, port: parseInt(e.target.value)})}
+                  onChange={e => {
+                    const portVal = parseInt(e.target.value);
+                    setSmtp({
+                      ...smtp, 
+                      port: portVal,
+                      secure: portVal === 465
+                    });
+                  }}
                   required
                 />
               </div>
